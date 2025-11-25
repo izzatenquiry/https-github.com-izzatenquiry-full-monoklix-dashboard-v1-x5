@@ -413,27 +413,57 @@ const MasterDashboardView: React.FC<MasterDashboardViewProps> = ({ currentUser, 
                 if (!uploadRes.ok) throw new Error(uploadData.error?.message || 'Upload failed');
                 const mediaId = uploadData.mediaGenerationId?.mediaGenerationId || uploadData.mediaId;
                 
-                // Step 2: Generate - Use R2V endpoint (Reference to Video)
+                // Step 2: Generate - Use R2V endpoint with COMPLETE payload structure
                 updateServerState(server.id, { status: 'running' });
                 appendLog(server.id, 'Generating video with R2V endpoint...');
+                
+                // Generate UUIDs for clientContext
+                const generateUUID = () => {
+                    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+                        const r = Math.random() * 16 | 0;
+                        const v = c === 'x' ? r : (r & 0x3 | 0x8);
+                        return v.toString(16);
+                    });
+                };
+                
+                const payload = {
+                    clientContext: {
+                        sessionId: `;${Date.now()}`,
+                        projectId: generateUUID(),
+                        tool: 'PINHOLE',
+                        userPaygateTier: 'PAYGATE_TIER_ONE'
+                    },
+                    requests: [{
+                        aspectRatio: 'VIDEO_ASPECT_RATIO_PORTRAIT',
+                        metadata: {
+                            sceneId: generateUUID()
+                        },
+                        referenceImages: [{
+                            imageUsageType: 'IMAGE_USAGE_TYPE_ASSET',
+                            mediaId: mediaId
+                        }],
+                        seed: randomSeed,
+                        textInput: { prompt: fullPrompt },
+                        videoModelKey: 'veo_3_0_r2v_fast'
+                    }]
+                };
+                
+                appendLog(server.id, `Scene ID: ${payload.requests[0].metadata.sceneId}`);
+                
                 const genRes = await fetch(`${server.url}/api/veo/generate-r2v`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${authToken}` },
-                    body: JSON.stringify({
-                         requests: [{
-                             aspectRatio: 'VIDEO_ASPECT_RATIO_PORTRAIT',
-                             textInput: { prompt: fullPrompt },
-                             seed: randomSeed,
-                             videoModelKey: 'veo_3_0_r2v_fast',
-                             referenceImages: [{
-                                 imageUsageType: 'IMAGE_USAGE_TYPE_ASSET',
-                                 mediaId: mediaId
-                             }]
-                         }]
-                    })
+                    body: JSON.stringify(payload)
                 });
+                
                 const genData = await safeJson(genRes);
-                if (!genRes.ok) throw new Error(genData.error?.message || 'Generation failed');
+                appendLog(server.id, `Response status: ${genRes.status}`);
+                
+                if (!genRes.ok) {
+                    const errorMsg = genData.error?.message || genData.message || JSON.stringify(genData);
+                    appendLog(server.id, `API Error Response: ${errorMsg}`);
+                    throw new Error(errorMsg);
+                }
                 let operations = genData.operations;
                 if (!operations || operations.length === 0) throw new Error('No operations returned');
                 
