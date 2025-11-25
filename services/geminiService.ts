@@ -177,6 +177,7 @@ export const generateVideo = async (
     negativePrompt: string,
     image: { imageBytes: string, mimeType: string } | undefined,
     onStatusUpdate?: (status: string) => void
+    videoMode: 'i2v' | 'r2v' = 'i2v'  // ← TAMBAH LINE NI
 ): Promise<{ videoFile: File; thumbnailUrl: string | null; }> => {
     try {
         let processedImage = image;
@@ -226,6 +227,7 @@ export const generateVideo = async (
                 useStandardModel,
                 authToken: successfulToken || undefined, 
             },
+            useReferenceMode: videoMode === 'r2v' // ← TAMBAH LINE NI
         }, onStatusUpdate);
 
         const videoCreationToken = generationToken;
