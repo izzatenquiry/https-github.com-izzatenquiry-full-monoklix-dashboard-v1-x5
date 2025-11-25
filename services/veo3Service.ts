@@ -12,6 +12,7 @@ interface VideoGenerationRequest {
   prompt: string;
   imageMediaId?: string;
   config: Omit<Veo3Config, 'authToken'> & { authToken?: string };
+  useReferenceMode?: boolean; // NEW: Flag to use R2V instead of I2V
 }
 
 export const generateVideoWithVeo3 = async (
@@ -20,19 +21,30 @@ export const generateVideoWithVeo3 = async (
     isHealthCheck = false
 ): Promise<{ operations: any[]; successfulToken: string }> => {
   console.log('🎬 [VEO Service] Preparing generateVideoWithVeo3 request...');
-  const { prompt, imageMediaId, config } = request;
+  const { prompt, imageMediaId, config, useReferenceMode = false } = request;
   const isImageToVideo = !!imageMediaId;
 
   let videoModelKey: string;
+  let relativePath: string;
   
   if (isImageToVideo) {
-    videoModelKey = config.aspectRatio === 'landscape'
-      ? 'veo_3_1_i2v_s_fast_landscape_ultra'
-      : 'veo_3_1_i2v_s_fast_portrait_ultra';
+    if (useReferenceMode) {
+      // R2V Mode - Reference to Video
+      videoModelKey = 'veo_3_0_r2v_fast';
+      relativePath = '/generate-r2v';
+    } else {
+      // I2V Mode - Image to Video (Start Image)
+      videoModelKey = config.aspectRatio === 'landscape'
+        ? 'veo_3_1_i2v_s_fast_landscape_ultra'
+        : 'veo_3_1_i2v_s_fast_portrait_ultra';
+      relativePath = '/generate-i2v';
+    }
   } else {
+    // T2V Mode - Text to Video
     videoModelKey = config.aspectRatio === 'landscape'
       ? 'veo_3_1_t2v_fast_ultra'
       : 'veo_3_1_t2v_fast_portrait_ultra';
+    relativePath = '/generate-t2v';
   }
 
   const aspectRatioValue = config.aspectRatio === 'landscape'
@@ -41,33 +53,61 @@ export const generateVideoWithVeo3 = async (
 
   const seed = config.seed || Math.floor(Math.random() * 2147483647);
   const sceneId = uuidv4();
+  const sessionId = `;${Date.now()}`;
+  const projectId = uuidv4();
 
+  // Base request structure with complete clientContext
   const requestBody: any = {
     clientContext: {
+      sessionId: sessionId,
+      projectId: projectId,
       tool: 'PINHOLE',
-      userPaygateTier: 'PAYGATE_TIER_TWO'
+      userPaygateTier: 'PAYGATE_TIER_ONE'
     },
     requests: [{
       aspectRatio: aspectRatioValue,
+      metadata: { 
+        sceneId: sceneId 
+      },
       seed: seed,
       textInput: { prompt },
-      videoModelKey: videoModelKey,
-      metadata: { sceneId: sceneId }
+      videoModelKey: videoModelKey
     }]
   };
 
+  // Add image reference based on mode
   if (imageMediaId) {
-    requestBody.requests[0].startImage = { mediaId: imageMediaId };
+    if (useReferenceMode) {
+      // R2V Format: Use referenceImages array
+      requestBody.requests[0].referenceImages = [{
+        imageUsageType: 'IMAGE_USAGE_TYPE_ASSET',
+        mediaId: imageMediaId
+      }];
+      console.log('🎨 [VEO Service] Using R2V mode (referenceImages)');
+    } else {
+      // I2V Format: Use startImage
+      requestBody.requests[0].startImage = { 
+        mediaId: imageMediaId 
+      };
+      console.log('🖼️ [VEO Service] Using I2V mode (startImage)');
+    }
   }
 
-  console.log('🎬 [VEO Service] Constructed T2V/I2V request body. Sending to API client.');
-  const relativePath = isImageToVideo ? '/generate-i2v' : '/generate-t2v';
+  console.log('🎬 [VEO Service] Request details:', {
+    mode: isImageToVideo ? (useReferenceMode ? 'R2V' : 'I2V') : 'T2V',
+    endpoint: relativePath,
+    videoModelKey,
+    aspectRatio: aspectRatioValue,
+    seed,
+    sceneId,
+    hasImage: !!imageMediaId
+  });
   
   const logContext = isHealthCheck
-    ? (isImageToVideo ? 'VEO I2V HEALTH CHECK' : 'VEO T2V HEALTH CHECK')
-    : (isImageToVideo ? 'VEO I2V GENERATE' : 'VEO T2V GENERATE');
+    ? (isImageToVideo ? (useReferenceMode ? 'VEO R2V HEALTH CHECK' : 'VEO I2V HEALTH CHECK') : 'VEO T2V HEALTH CHECK')
+    : (isImageToVideo ? (useReferenceMode ? 'VEO R2V GENERATE' : 'VEO I2V GENERATE') : 'VEO T2V GENERATE');
   
-  // If this is an I2V request, we MUST use the token that was used to upload the image (config.authToken).
+  // If this is an I2V/R2V request, we MUST use the token that was used to upload the image (config.authToken).
   // executeProxiedRequest handles this via the `specificToken` param.
   const { data, successfulToken } = await executeProxiedRequest(
     relativePath,
@@ -151,4 +191,44 @@ export const uploadImageForVeo3 = async (
   
   console.log(`📤 [VEO Service] Image upload successful. Media ID: ${mediaId} with token ...${successfulToken.slice(-6)}`);
   return { mediaId, successfulToken };
+};
+
+// HELPER: Function to generate R2V video (convenience wrapper)
+export const generateR2VVideo = async (
+  prompt: string,
+  imageMediaId: string,
+  config: Omit<Veo3Config, 'authToken'> & { authToken?: string },
+  onStatusUpdate?: (status: string) => void
+): Promise<{ operations: any[]; successfulToken: string }> => {
+  console.log('🎨 [VEO Service] Generating R2V video...');
+  return generateVideoWithVeo3(
+    {
+      prompt,
+      imageMediaId,
+      config,
+      useReferenceMode: true // Force R2V mode
+    },
+    onStatusUpdate,
+    false
+  );
+};
+
+// HELPER: Function to generate I2V video (convenience wrapper)
+export const generateI2VVideo = async (
+  prompt: string,
+  imageMediaId: string,
+  config: Omit<Veo3Config, 'authToken'> & { authToken?: string },
+  onStatusUpdate?: (status: string) => void
+): Promise<{ operations: any[]; successfulToken: string }> => {
+  console.log('🖼️ [VEO Service] Generating I2V video...');
+  return generateVideoWithVeo3(
+    {
+      prompt,
+      imageMediaId,
+      config,
+      useReferenceMode: false // Force I2V mode
+    },
+    onStatusUpdate,
+    false
+  );
 };
