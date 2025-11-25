@@ -9,7 +9,6 @@ import { MODELS } from '../../services/aiConfig';
 import { addLogEntry } from '../../services/aiLogService';
 import { triggerUserWebhook } from '../../services/webhookService';
 import { handleApiError } from '../../services/errorHandler';
-// FIX: Add missing Language import.
 import { type User, type Language } from '../../types';
 import { incrementVideoUsage } from '../../services/userService';
 import CreativeDirectionPanel from '../common/CreativeDirectionPanel';
@@ -31,7 +30,6 @@ interface VideoGenerationViewProps {
   clearPreset: () => void;
   currentUser: User;
   onUserUpdate: (user: User) => void;
-  // FIX: Add language to props.
   language: Language;
 }
 
@@ -54,6 +52,13 @@ const moodOptions = [
 const languages = ["English", "Bahasa Malaysia", "Chinese"];
 const voiceActorOptions = ["Male", "Female", "Mix Actor"];
 
+// NEW: Video generation modes
+const VIDEO_MODES = {
+  I2V: 'i2v', // Image to Video (Start Image)
+  R2V: 'r2v', // Reference to Video (Reference Image)
+} as const;
+
+type VideoMode = typeof VIDEO_MODES[keyof typeof VIDEO_MODES];
 
 const SESSION_KEY = 'videoGenerationState';
 
@@ -87,6 +92,8 @@ const VideoGenerationView: React.FC<VideoGenerationViewProps> = ({ preset, clear
   const [voiceoverMood, setVoiceoverMood] = useState('Normal');
   const [voiceoverActor, setVoiceoverActor] = useState('Male');
 
+  // NEW: Video generation mode state
+  const [videoMode, setVideoMode] = useState<VideoMode>(VIDEO_MODES.I2V);
 
   const model = MODELS.videoGenerationDefault;
   const isVeo3 = model.startsWith('veo-3');
@@ -95,7 +102,8 @@ const VideoGenerationView: React.FC<VideoGenerationViewProps> = ({ preset, clear
     prompt, negativePrompt, dialogue, dialogueAudio,
     creativeState,
     referenceImage, previewUrl, resolution, aspectRatio, 
-    includeCaptions, includeVoiceover, voiceoverLanguage, voiceoverMood, voiceoverActor
+    includeCaptions, includeVoiceover, voiceoverLanguage, voiceoverMood, voiceoverActor,
+    videoMode // NEW: Save mode to session
   };
 
   useEffect(() => {
@@ -118,6 +126,7 @@ const VideoGenerationView: React.FC<VideoGenerationViewProps> = ({ preset, clear
                 if (key === 'voiceoverLanguage') setVoiceoverLanguage(state[key]);
                 if (key === 'voiceoverMood') setVoiceoverMood(state[key]);
                 if (key === 'voiceoverActor') setVoiceoverActor(state[key]);
+                if (key === 'videoMode') setVideoMode(state[key]); // NEW: Restore mode
             });
         }
     } catch (e) { console.error("Failed to load state from session storage", e); }
@@ -127,12 +136,12 @@ const VideoGenerationView: React.FC<VideoGenerationViewProps> = ({ preset, clear
     try {
         sessionStorage.setItem(SESSION_KEY, JSON.stringify(allStates));
     } catch (e) { console.error("Failed to save state to session storage", e); }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     prompt, negativePrompt, dialogue, dialogueAudio,
     creativeState,
     referenceImage, previewUrl, resolution, aspectRatio,
-    includeCaptions, includeVoiceover, voiceoverLanguage, voiceoverMood, voiceoverActor
+    includeCaptions, includeVoiceover, voiceoverLanguage, voiceoverMood, voiceoverActor,
+    videoMode // NEW: Save mode changes
   ]);
 
   const loadingMessages = [
@@ -199,15 +208,13 @@ const VideoGenerationView: React.FC<VideoGenerationViewProps> = ({ preset, clear
       }
   }, [preset, clearPreset]);
 
-  // Cleanup blob URL on component unmount to prevent memory leaks
   useEffect(() => {
-    // The ref holds the latest URL. The function captures the ref itself.
     return () => {
       if (videoUrlRef.current && videoUrlRef.current.startsWith('blob:')) {
         URL.revokeObjectURL(videoUrlRef.current);
       }
     };
-  }, []); // Empty array ensures it only runs on mount/unmount
+  }, []);
 
 
   const handleImageUpload = useCallback((base64: string, mimeType: string, file: File) => {
@@ -229,7 +236,6 @@ const VideoGenerationView: React.FC<VideoGenerationViewProps> = ({ preset, clear
 
       setIsLoading(true);
       setError(null);
-      // Manually revoke the old URL before clearing state
       if (videoUrl && videoUrl.startsWith('blob:')) {
           URL.revokeObjectURL(videoUrl);
       }
@@ -275,8 +281,15 @@ const VideoGenerationView: React.FC<VideoGenerationViewProps> = ({ preset, clear
       // Visuals
       promptLines.push(isMalay ? '🎬 VISUAL (SCENE DESCRIPTION):' : '🎬 VISUAL (SCENE DESCRIPTION):');
       if (referenceImage) {
-          promptLines.push(isMalay ? 'Animate the provided image.' : 'Animate the provided image.');
-          promptLines.push(isMalay ? `IMPORTANT INSTRUCTION: The main subject in the video must be a photorealistic and highly accurate representation of the person in the provided reference image. Maintain their facial features and identity precisely.` : 'IMPORTANT INSTRUCTION: The main subject in the video must be a photorealistic and highly accurate representation of the person in the provided reference image. Maintain their facial features and identity precisely.');
+          // NEW: Different instructions based on video mode
+          if (videoMode === VIDEO_MODES.R2V) {
+              promptLines.push(isMalay ? 'Use the provided image as a reference for style, composition, and artistic direction.' : 'Use the provided image as a reference for style, composition, and artistic direction.');
+              promptLines.push(isMalay ? 'IMPORTANT: The image serves as inspiration. Recreate similar visual elements, mood, and aesthetic in the video.' : 'IMPORTANT: The image serves as inspiration. Recreate similar visual elements, mood, and aesthetic in the video.');
+          } else {
+              // I2V mode
+              promptLines.push(isMalay ? 'Animate the provided image.' : 'Animate the provided image.');
+              promptLines.push(isMalay ? `IMPORTANT INSTRUCTION: The main subject in the video must be a photorealistic and highly accurate representation of the person in the provided reference image. Maintain their facial features and identity precisely.` : 'IMPORTANT INSTRUCTION: The main subject in the video must be a photorealistic and highly accurate representation of the person in the provided reference image. Maintain their facial features and identity precisely.');
+          }
       }
       promptLines.push(prompt.trim());
       promptLines.push('\n---');
@@ -317,17 +330,26 @@ const VideoGenerationView: React.FC<VideoGenerationViewProps> = ({ preset, clear
       try {
           const image = referenceImage ? { imageBytes: referenceImage.base64, mimeType: referenceImage.mimeType } : undefined;
           
-          const { videoFile, thumbnailUrl: newThumbnailUrl } = await generateVideo(fullPrompt, model, aspectRatio, resolution, dynamicNegativePrompt, image, setStatusMessage);
+          // NEW: Pass videoMode to generateVideo function
+          const { videoFile, thumbnailUrl: newThumbnailUrl } = await generateVideo(
+              fullPrompt, 
+              model, 
+              aspectRatio, 
+              resolution, 
+              dynamicNegativePrompt, 
+              image, 
+              setStatusMessage,
+              videoMode // NEW: Pass the selected mode
+          );
 
           if (videoFile) {
               const objectUrl = URL.createObjectURL(videoFile);
               console.log('✅ Video file received and object URL created:', objectUrl);
               setVideoUrl(objectUrl);
-              videoUrlRef.current = objectUrl; // Keep ref in sync for cleanup
+              videoUrlRef.current = objectUrl;
               setVideoFilename(videoFile.name);
               setThumbnailUrl(newThumbnailUrl);
               
-              // Save to history in the background
               addHistoryItem({
                   type: 'Video',
                   prompt: `Video Generation: ${prompt.trim().substring(0, 100)}...`,
@@ -349,7 +371,7 @@ const VideoGenerationView: React.FC<VideoGenerationViewProps> = ({ preset, clear
           setIsLoading(false);
           setStatusMessage('');
       }
-  }, [prompt, creativeState, dialogue, dialogueAudio, isVeo3, referenceImage, model, aspectRatio, resolution, negativePrompt, voiceoverLanguage, voiceoverMood, currentUser, onUserUpdate, videoUrl, includeCaptions, includeVoiceover, voiceoverActor]);
+  }, [prompt, creativeState, dialogue, dialogueAudio, isVeo3, referenceImage, model, aspectRatio, resolution, negativePrompt, voiceoverLanguage, voiceoverMood, currentUser, onUserUpdate, videoUrl, includeCaptions, includeVoiceover, voiceoverActor, videoMode]);
 
   const handleDownloadVideo = async () => {
     if (!videoUrl || !videoFilename) return;
@@ -400,6 +422,7 @@ const VideoGenerationView: React.FC<VideoGenerationViewProps> = ({ preset, clear
     setVoiceoverLanguage('English');
     setVoiceoverMood('Normal');
     setVoiceoverActor('Male');
+    setVideoMode(VIDEO_MODES.I2V); // NEW: Reset mode
     setImageUploadKey(Date.now());
     setStatusMessage('');
     sessionStorage.removeItem(SESSION_KEY);
@@ -432,6 +455,45 @@ const VideoGenerationView: React.FC<VideoGenerationViewProps> = ({ preset, clear
 
         <div>
             <h2 className="text-lg font-semibold mb-2">Reference Image (Optional)</h2>
+            
+            {/* NEW: Video Mode Selector - Only show when image is present */}
+            {referenceImage && (
+                <div className="mb-3 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-200 dark:border-blue-800">
+                    <label className="block text-sm font-medium mb-2 text-blue-900 dark:text-blue-100">
+                        🎬 Video Generation Mode
+                    </label>
+                    <div className="grid grid-cols-2 gap-2">
+                        <button
+                            onClick={() => setVideoMode(VIDEO_MODES.I2V)}
+                            className={`p-2 rounded-lg text-sm font-medium transition-colors ${
+                                videoMode === VIDEO_MODES.I2V
+                                    ? 'bg-blue-600 text-white'
+                                    : 'bg-white dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 border border-neutral-300 dark:border-neutral-700'
+                            }`}
+                        >
+                            <div className="font-bold">I2V (Start Image)</div>
+                            <div className="text-xs opacity-80 mt-1">Animate from this exact frame</div>
+                        </button>
+                        <button
+                            onClick={() => setVideoMode(VIDEO_MODES.R2V)}
+                            className={`p-2 rounded-lg text-sm font-medium transition-colors ${
+                                videoMode === VIDEO_MODES.R2V
+                                    ? 'bg-blue-600 text-white'
+                                    : 'bg-white dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 border border-neutral-300 dark:border-neutral-700'
+                            }`}
+                        >
+                            <div className="font-bold">R2V (Reference)</div>
+                            <div className="text-xs opacity-80 mt-1">Use as style reference</div>
+                        </button>
+                    </div>
+                    <p className="text-xs text-blue-700 dark:text-blue-300 mt-2">
+                        {videoMode === VIDEO_MODES.I2V 
+                            ? '📌 Video will START from this exact image and animate it.'
+                            : '🎨 Video will use this image as STYLE/COMPOSITION reference.'}
+                    </p>
+                </div>
+            )}
+
             {previewUrl ? (
                  <div className="relative w-full aspect-video rounded-lg overflow-hidden">
                     <img src={previewUrl} alt="Reference Preview" className="w-full h-full object-contain bg-neutral-100 dark:bg-neutral-800" />
@@ -440,11 +502,10 @@ const VideoGenerationView: React.FC<VideoGenerationViewProps> = ({ preset, clear
                     </button>
                 </div>
             ) : (
-                // FIX: Add missing 'language' prop to ImageUpload component.
                 <ImageUpload id="video-ref-upload" key={imageUploadKey} onImageUpload={handleImageUpload} title="Upload Starting Image" language={language}/>
             )}
             <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-2 p-2 bg-neutral-100 dark:bg-neutral-800/50 rounded-md">
-                The AI will use this image as the starting point for the video.
+                The AI will use this image as {referenceImage && videoMode === VIDEO_MODES.R2V ? 'a reference for style and composition' : 'the starting point for the video'}.
             </p>
         </div>
 
@@ -548,7 +609,7 @@ const VideoGenerationView: React.FC<VideoGenerationViewProps> = ({ preset, clear
                   <p className="mt-4 text-neutral-500 dark:text-neutral-400">{statusMessage || 'Generating...'}</p>
                   <p className="mt-2 text-xs text-neutral-400 dark:text-neutral-500">{loadingMessages[loadingMessageIndex]}</p>
               </div>
-          ) : error && !videoUrl ? ( // Only show error if there's no video to display
+          ) : error && !videoUrl ? (
                <div className="text-center text-red-500 dark:text-red-400 p-4">
                    <AlertTriangleIcon className="w-12 h-12 mx-auto mb-4" />
                    <p className="font-semibold">Generation Failed</p>
@@ -596,7 +657,6 @@ const VideoGenerationView: React.FC<VideoGenerationViewProps> = ({ preset, clear
       </>
   );
 
-  // FIX: Pass the 'language' prop to the TwoColumnLayout component.
   return <TwoColumnLayout leftPanel={leftPanel} rightPanel={rightPanel} language={language} />;
 };
 
