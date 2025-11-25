@@ -413,7 +413,7 @@ const MasterDashboardView: React.FC<MasterDashboardViewProps> = ({ currentUser, 
                 if (!uploadRes.ok) throw new Error(uploadData.error?.message || 'Upload failed');
                 const mediaId = uploadData.mediaGenerationId?.mediaGenerationId || uploadData.mediaId;
                 
-                // Step 2: Generate - Use R2V endpoint with COMPLETE payload structure
+                // Step 2: Generate - Use R2V endpoint (correct plural form)
                 updateServerState(server.id, { status: 'running' });
                 appendLog(server.id, 'Generating video with R2V endpoint...');
                 
