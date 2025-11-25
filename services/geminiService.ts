@@ -176,7 +176,7 @@ export const generateVideo = async (
     resolution: string,
     negativePrompt: string,
     image: { imageBytes: string, mimeType: string } | undefined,
-    onStatusUpdate?: (status: string) => void
+    onStatusUpdate?: (status: string) => void,
     videoMode: 'i2v' | 'r2v' = 'i2v'  // ← TAMBAH LINE NI
 ): Promise<{ videoFile: File; thumbnailUrl: string | null; }> => {
     try {
